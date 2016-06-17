@@ -15,23 +15,22 @@ This is what a charm using this relation would look like:
     from charmhelpers.core.reactive import set_state
     from charmhelpers.core.reactive import remove_state
 
-    @hook('db-relation-joined')
+    @when('db.connected')
     def request_db(pgsql):
-        pgsql.change_database_name('mydb')
-        pgsql.request_roles('myrole', 'otherrole')
+        pgsql.set_database('mydb')
 
-    @hook('config-changed')
+    @when('config.changed')
     def check_admin_pass():
-        admin_pass = hookenv.config('admin-pass')
+        admin_pass = hookenv.config()['admin-pass']
         if admin_pass:
             set_state('admin-pass')
         else:
             remove_state('admin-pass')
 
-    @when('db.database.available', 'admin-pass')
+    @when('db.master.available', 'admin-pass')
     def render_config(pgsql):
         render_template('app-config.j2', '/etc/app.conf', {
-            'db_conn': pgsql.connection_string(),
+            'db_conn': pgsql.master,
             'admin_pass': hookenv.config('admin-pass'),
         })
 
@@ -42,6 +41,13 @@ This is what a charm using this relation would look like:
 
 Reference
 ---------
+.. autoclass::
+    requires.ConnectionString
+    :members:
+
+.. autoclass::
+    requires.ConnectionStrings
+    :members:
 
 .. autoclass::
     requires.PostgreSQLClient

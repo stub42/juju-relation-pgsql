@@ -7,7 +7,6 @@ Contents:
    :maxdepth: 2
 
    requires
-   provides
 
 
 Indices and tables
