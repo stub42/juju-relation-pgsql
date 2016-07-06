@@ -24,10 +24,15 @@ from charmhelpers.core import hookenv
 from charms.reactive import hook, scopes, RelationBase
 
 
+# This data structure cannot be in an external library, as interfaces
+# have no way to declare dependencies. It also must be defined in this
+# file, as reactive framework imports are broken per
+# https://github.com/juju-solutions/charms.reactive/pull/51
+#
 class ConnectionString(str):
     """A libpq connection string.
 
-    >>> c = ConnectionString(host='1.2.3.4',dbname='mydb',
+    >>> c = ConnectionString(host='1.2.3.4', dbname='mydb',
     ...                      port=5432, user='anon', password='secret')
     ...
     >>> c
@@ -145,6 +150,7 @@ class PostgreSQLClient(RelationBase):
     def joined(self):
         # There is at least one named relation
         self.set_state('{relation_name}.connected')
+        hookenv.log('Joined {} relation'.format(hookenv.relation_id()))
 
     @hook('{requires:pgsql}-relation-{joined,changed,departed}')
     def changed(self):
@@ -163,13 +169,27 @@ class PostgreSQLClient(RelationBase):
         self.toggle_state('{relation_name}.database.available',
                           cs.master or cs.standbys)
 
+        # Ideally, we could turn logging off using a layer option
+        # but that is not available for interfaces.
+        if cs.master and cs.standbys:
+            hookenv.log('Relation {} has master and standby '
+                        'databases available'.format(relid))
+        elif cs.master:
+            hookenv.log('Relation {} has a master database available, '
+                        'but no standbys'.format(relid))
+        elif cs.standbys:
+            hookenv.log('Relation {} only has standby databases '
+                        'available'.format(relid))
+        else:
+            hookenv.log('Relation {} has no databases available'.format(relid))
+
     @hook('{requires:pgsql}-relation-departed')
     def departed(self):
-        rels = context.Relations()[self.relation_name]
         if not any(u for u in hookenv.related_units() or []
                    if u != hookenv.remote_unit()):
             self.remove_state('{relation_name}.connected')
             self.conversation().depart()
+            hookenv.log('Departed {} relation'.format(hookenv.relation_id()))
 
     def set_database(self, dbname, relid=None):
         """Set the database that the named relations connect to.
