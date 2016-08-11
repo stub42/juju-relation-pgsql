@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from collections import namedtuple
+from collections import OrderedDict
 import ipaddress
 import itertools
 import urllib.parse
@@ -24,10 +24,11 @@ from charmhelpers.core import hookenv
 from charms.reactive import hook, scopes, RelationBase
 
 
-# This data structure cannot be in an external library, as interfaces
-# have no way to declare dependencies. It also must be defined in this
-# file, as reactive framework imports are broken per
-# https://github.com/juju-solutions/charms.reactive/pull/51
+# This data structure cannot be in an external library,
+# as interfaces have no way to declare dependencies
+# (https://github.com/juju/charm-tools/issues/243).
+# It also must be defined in this file
+# (https://github.com/juju-solutions/charms.reactive/pull/51)
 #
 class ConnectionString(str):
     """A libpq connection string.
@@ -104,14 +105,47 @@ class ConnectionString(str):
             raise KeyError(key)
 
 
-ConnectionStrings = namedtuple('ConnectionStrings',
-                               ['relid', 'master', 'standbys'])
-ConnectionStrings.__doc__ = (
-    """Collection of :class:`ConnectionString` for a relation.""")
-ConnectionStrings.relid.__doc__ = 'Relation id'
-ConnectionStrings.master.__doc__ = 'master database :class:`ConnectionString`'
-ConnectionStrings.standbys.__doc__ = (
-    'set of :class:`ConnectionString` to hot standby databases')
+class ConnectionStrings(OrderedDict):
+    """Collection of :class:`ConnectionString` for a relation.
+
+    :class:`ConnectionString` may be accessed as a dictionary
+    lookup by unit name, or more usefully by the master and
+    standbys attributes. Note that the dictionary lookup may
+    return None, when the database is not ready for use.
+    """
+    relname = None
+    relid = None
+
+    def __init__(self, relid):
+        super(ConnectionStrings, self).__init__()
+        self.relname = relid.split(':', 1)[0]
+        self.relid = relid
+        relations = context.Relations()
+        relation = relations[self.relname][relid]
+        for unit, reldata in relation.items():
+            self[unit] = _cs(reldata)
+
+    @property
+    def master(self):
+        """The :class:`ConnectionString` for the master, or None."""
+        relation = context.Relations()[self.relname][self.relid]
+        masters = [unit for unit, reldata in relation.items()
+                   if reldata.get('state') in ('master', 'standalone')]
+        if len(masters) == 1:
+            return self[masters[0]]  # One, and only one.
+        else:
+            # None ready, or multiple due to failover in progress.
+            return None
+
+    @property
+    def standbys(self):
+        """Iteration of :class:`ConnectionString` for active hot standbys."""
+        relation = context.Relations()[self.relname][self.relid]
+        for unit, reldata in relation.items():
+            if reldata.get('state') == 'hot standby':
+                conn_str = self[unit]
+                if conn_str:
+                    yield conn_str
 
 
 class PostgreSQLClient(RelationBase):
@@ -211,30 +245,7 @@ class PostgreSQLClient(RelationBase):
 
     def __getitem__(self, relid):
         """:returns: :class:`ConnectionStrings` for the relation id."""
-        relations = context.Relations()
-        relname = self.relation_name
-        assert relid.startswith('{}:'.format(relname)), (
-            'relid {} not handled by {} instance'.format(relid, relname))
-
-        relation = relations[relname][relid]
-
-        master_reldatas = [reldata
-                           for reldata in relation.values()
-                           if reldata.get('state') in ('master', 'standalone')]
-        if len(master_reldatas) == 1:
-            master_reldata = master_reldatas[0]  # One, and only one.
-        else:
-            # None ready, or multiple due to failover in progress.
-            master_reldata = None
-
-        master = self._cs(master_reldata)
-
-        standbys = set(filter(None,
-                              (self._cs(reldata)
-                               for reldata in relation.values()
-                               if reldata.get('state') == 'hot standby')))
-
-        return ConnectionStrings(relid, master, standbys)
+        return ConnectionStrings(relid)
 
     def __iter__(self):
         """:returns: Iterator of :class:`ConnectionStrings` for this named
@@ -278,29 +289,35 @@ class PostgreSQLClient(RelationBase):
             unit = hookenv.remote_unit()
 
         relations = context.Relations()
+        found = False
         for relation in relations[self.relation_name].values():
             if unit in relation:
-                conn_str = self._cs(relation[unit])
+                found = True
+                conn_str = _cs(relation[unit])
                 if conn_str:
                     return conn_str
-        raise LookupError(unit)
+        if found:
+            return None  # unit found, but not yet ready.
+        raise LookupError(unit)  # unit not related.
 
-    def _cs(self, reldata):
-        if not reldata:
-            return None
-        d = dict(host=reldata.get('host'),
-                 port=reldata.get('port'),
-                 dbname=reldata.get('database'),
-                 user=reldata.get('user'),
-                 password=reldata.get('password'))
-        if not all(d.values()):
-            return None
-        local_unit = hookenv.local_unit()
-        if local_unit not in reldata.get('allowed-units', '').split():
-            # Not yet authorized
-            return None
-        locdata = context.Relations()[reldata.relname][reldata.relid].local
-        if 'database' in locdata and locdata['database'] != d['dbname']:
-            # Requested database does not yet match
-            return None
-        return ConnectionString(**d)
+
+def _cs(reldata):
+    """Generate a ConnectionString from :class:``context.RelationData``"""
+    if not reldata:
+        return None
+    d = dict(host=reldata.get('host'),
+             port=reldata.get('port'),
+             dbname=reldata.get('database'),
+             user=reldata.get('user'),
+             password=reldata.get('password'))
+    if not all(d.values()):
+        return None
+    local_unit = hookenv.local_unit()
+    if local_unit not in reldata.get('allowed-units', '').split():
+        # Not yet authorized
+        return None
+    locdata = context.Relations()[reldata.relname][reldata.relid].local
+    if 'database' in locdata and locdata['database'] != d['dbname']:
+        # Requested database does not yet match
+        return None
+    return ConnectionString(**d)

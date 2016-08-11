@@ -1,5 +1,5 @@
 *~
 *.pyc
-.venv/
-.venv3/
+__pycache__/
+.tox
 docs/build/
