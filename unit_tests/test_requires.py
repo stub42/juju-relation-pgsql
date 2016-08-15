@@ -19,9 +19,6 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from charmhelpers import context
-from charmhelpers.core import hookenv
-
 sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir))
 
 import requires
@@ -39,15 +36,17 @@ class TestConnectionStringConstructor(unittest.TestCase):
         self.reldata.relname = 'relname'
         self.reldata.relid = 'relname:42'
 
-        mocks = ['charmhelpers.core.hookenv.local_unit',
-                 'charmhelpers.context.Relations']
-        for mock in mocks:
-            self.addCleanup(patch(mock).start().stop)
+        local_unit = self.patch('charmhelpers.core.hookenv.local_unit')
+        local_unit.return_value = 'client/9'
 
-        hookenv.local_unit.return_value = 'client/9'
-        context.Relations()['relname']['relname:42'].local = {
-            'database': 'mydata',
-        }
+        rels = self.patch('charmhelpers.context.Relations')
+        rels()['relname']['relname:42'].local = {'database': 'mydata'}
+
+    def patch(self, dotpath):
+        patcher = patch(dotpath, autospec=True)
+        mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return mock
 
     def test_normal(self):
         conn_str = requires._cs(self.reldata)
