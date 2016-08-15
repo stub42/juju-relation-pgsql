@@ -17,4 +17,4 @@ if __name__ == '__main__':
         author_email='stuart.bishop@canonical.com',
         license='GPL3',
         py_modules=['requires'],
-        install_requires=[])
+        install_requires=reqs)
