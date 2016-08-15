@@ -57,7 +57,8 @@ class ConnectionString(str):
     def __new__(self, **kw):
         def quote(x):
             return str(x).replace("\\", "\\\\").replace("'", "\\'")
-        c = " ".join("{}={}".format(k, quote(v)) for k, v in kw.items())
+        c = " ".join("{}={}".format(k, quote(v))
+                     for k, v in sorted(kw.items()))
         c = str.__new__(self, c)
 
         for k, v in kw.items():
@@ -65,18 +66,41 @@ class ConnectionString(str):
 
         self._keys = set(kw.keys())
 
+        # Construct the documented PostgreSQL URI for applications
+        # that use this format. PostgreSQL docs refer to this as a
+        # URI so we do do, even though it meets the requirements the
+        # more specific term URL.
+        fmt = ['postgresql://']
         d = {k: urllib.parse.quote(v, safe='') for k, v in kw.items()}
-        try:
-            hostaddr = ipaddress.ip_address(kw.get('hostaddr') or
-                                            kw.get('host'))
-            if isinstance(hostaddr, ipaddress.IPv6Address):
-                d['host'] = '[{}]'.format(hostaddr)
+        if 'user' in d:
+            if 'password' in d:
+                fmt.append('{user}:{password}@')
             else:
-                d['host'] = str(hostaddr)
-        except ValueError:
-            pass
-        fmt = 'postgresql://{user}:{password}@{host}:{port}/{dbname}'
-        self.uri = fmt.format(**d)
+                fmt.append('{user}@')
+        if 'host' in kw:
+            try:
+                hostaddr = ipaddress.ip_address(kw.get('hostaddr') or
+                                                kw.get('host'))
+                if isinstance(hostaddr, ipaddress.IPv6Address):
+                    d['hostaddr'] = '[{}]'.format(hostaddr)
+                else:
+                    d['hostaddr'] = str(hostaddr)
+            except ValueError:
+                # Not an IP address, but hopefully a resolvable name.
+                d['hostaddr'] = d['host']
+            del d['host']
+            fmt.append('{hostaddr}')
+        if 'port' in d:
+            fmt.append(':{port}')
+        if 'dbname' in d:
+            fmt.append('/{dbname}')
+        main_keys = frozenset(['user', 'password',
+                               'dbname', 'hostaddr', 'port'])
+        extra_fmt = ['{}={{{}}}'.format(extra, extra)
+                     for extra in sorted(d.keys()) if extra not in main_keys]
+        if extra_fmt:
+            fmt.extend(['?', '&'.join(extra_fmt)])
+        c.uri = ''.join(fmt).format(**d)
 
         return c
 
