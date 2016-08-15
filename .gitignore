@@ -3,3 +3,5 @@
 __pycache__/
 .tox
 docs/build/
+build/
+docs/source/_build/

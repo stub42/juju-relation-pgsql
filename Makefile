@@ -9,7 +9,8 @@ clean:
 	git clean -fX
 
 .PHONY: lint
-lint: tox -e lint
+lint:
+	tox -e lint
 
 .PHONY: tox
 tox:
