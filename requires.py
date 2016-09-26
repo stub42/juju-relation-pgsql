@@ -267,6 +267,36 @@ class PostgreSQLClient(RelationBase):
             if relid is None or c.namespace == relid:
                 c.set_remote('database', dbname)
 
+    def set_roles(self, roles, relid=None):
+        """Provide a set of roles to be granted to the database user.
+
+        Granting permissions to roles allows you to grant database
+        access to other charms.
+
+        The PostgreSQL service will create the roles if necessary.
+        """
+        if isinstance(roles, str):
+            roles = [roles]
+        roles = ','.join(sorted(roles))
+        for c in self.conversations():
+            if relid is None or c.namespace == relid:
+                c.set_remote('roles', roles)
+
+    def set_extensions(self, extensions, relid=None):
+        """Provide a set of extensions to be installed into the database.
+
+        The PostgreSQL service will attempt to install the requested
+        extensions into the database. Extensions not bundled with
+        PostgreSQL are normally installed onto the PostgreSQL service
+        using the `extra_packages` config setting.
+        """
+        if isinstance(extensions, str):
+            extensions = [extensions]
+        extensions = ','.join(sorted(extensions))
+        for c in self.conversations():
+            if relid is None or c.namespace == relid:
+                c.set_remote('extensions', extensions)
+
     def __getitem__(self, relid):
         """:returns: :class:`ConnectionStrings` for the relation id."""
         return ConnectionStrings(relid)
@@ -338,10 +368,13 @@ def _cs(reldata):
         return None
     local_unit = hookenv.local_unit()
     if local_unit not in reldata.get('allowed-units', '').split():
-        # Not yet authorized
-        return None
+        return None  # Not yet authorized
     locdata = context.Relations()[reldata.relname][reldata.relid].local
     if 'database' in locdata and locdata['database'] != d['dbname']:
-        # Requested database does not yet match
-        return None
+        return None  # Requested database does not match yet
+    if 'roles' in locdata and locdata['roles'] != reldata.get('roles'):
+        return None  # Requested roles have not yet been assigned
+    if 'extensions' in locdata and (locdata['extensions'] !=
+                                    reldata.get('extensions')):
+        return None  # Requested extensions have not yet been installed
     return ConnectionString(**d)
