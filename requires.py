@@ -17,6 +17,7 @@
 from collections import OrderedDict
 import ipaddress
 import itertools
+import re
 import urllib.parse
 
 from charmhelpers import context
@@ -38,6 +39,8 @@ class ConnectionString(str):
     ...
     >>> c
     'host=1.2.3.4 dbname=mydb port=5432 user=anon password=secret
+    >>> ConnectionString(str(c), dbname='otherdb')
+    'host=1.2.3.4 dbname=otherdb port=5432 user=anon password=secret
 
     Components may be accessed as attributes.
 
@@ -54,11 +57,36 @@ class ConnectionString(str):
     'postgresql://anon:secret@1.2.3.4:5432/mydb'
 
     """
-    def __new__(self, **kw):
+    def __new__(self, conn_str=None, **kw):
+
+        # Parse libpq key=value style connection string. Components
+        # passed by keyword argument override. If the connection string
+        # is invalid, some components may be skipped (but in practice,
+        # where database and usernames don't contain whitespace,
+        # quotes or backslashes, this doesn't happen).
+        if conn_str is not None:
+            r = re.compile(r"""(?x)
+                               (\w+) \s* = \s*
+                               (?:
+                                 '((?:.|\.)*?)' |
+                                 (\S*)
+                               )
+                               (?=(?:\s|\Z))
+                           """)
+            for key, v1, v2 in r.findall(conn_str):
+                if key not in kw:
+                    kw[key] = v1 or v2
+
         def quote(x):
-            return str(x).replace("\\", "\\\\").replace("'", "\\'")
+            q = str(x).replace("\\", "\\\\").replace("'", "\\'")
+            q = q.replace('\n', ' ')  # \n is invalid in connection strings
+            if ' ' in q:
+                q = "'" + q + "'"
+            return q
+
         c = " ".join("{}={}".format(k, quote(v))
-                     for k, v in sorted(kw.items()))
+                     for k, v in sorted(kw.items())
+                     if v)
         c = str.__new__(self, c)
 
         for k, v in kw.items():
@@ -71,7 +99,7 @@ class ConnectionString(str):
         # URI so we do do, even though it meets the requirements the
         # more specific term URL.
         fmt = ['postgresql://']
-        d = {k: urllib.parse.quote(v, safe='') for k, v in kw.items()}
+        d = {k: urllib.parse.quote(v, safe='') for k, v in kw.items() if v}
         if 'user' in d:
             if 'password' in d:
                 fmt.append('{user}:{password}@')
@@ -153,6 +181,16 @@ class ConnectionStrings(OrderedDict):
     def master(self):
         """The :class:`ConnectionString` for the master, or None."""
         relation = context.Relations()[self.relname][self.relid]
+
+        if not self._authorized(relation):
+            return None
+
+        # New v2 protocol, each unit advertises the master connection.
+        for reldata in relation.values():
+            if reldata.get('master'):
+                return ConnectionString(reldata['master'])
+
+        # Fallback to v1 protocol.
         masters = [unit for unit, reldata in relation.items()
                    if reldata.get('state') in ('master', 'standalone')]
         if len(masters) == 1:
@@ -163,13 +201,58 @@ class ConnectionStrings(OrderedDict):
 
     @property
     def standbys(self):
-        """Iteration of :class:`ConnectionString` for active hot standbys."""
+        """list of :class:`ConnectionString` for active hot standbys."""
         relation = context.Relations()[self.relname][self.relid]
+
+        if not self._authorized(relation):
+            return None
+
+        # New v2 protocol, each unit advertises all standbys.
+        for reldata in relation.values():
+            if reldata.get('standbys'):
+                return [ConnectionString(s)
+                        for s in reldata['standbys'].splitlines() if s]
+
+        # Fallback to v1 protocol.
+        s = []
         for unit, reldata in relation.items():
             if reldata.get('state') == 'hot standby':
                 conn_str = self[unit]
                 if conn_str:
-                    yield conn_str
+                    s.append(conn_str)
+        return s
+
+    @property
+    def version(self):
+        """PostgreSQL major version (eg. `9.5`)."""
+        for relation in context.Relations()[self.relname][self.relid].values():
+            if relation.get('version'):
+                return relation['version']
+        return None
+
+    def _authorized(self, relation):
+        local_unit = hookenv.local_unit()
+        for reldata in relation.values():
+            # Ignore new PostgreSQL units that are not yet providing
+            # connection details. ie. all remote units that have not
+            # yet run their -relation-joined hook and are yet unaware
+            # of this client. This prevents authorization 'flapping' when
+            # new remote units are added.
+            if 'master' not in reldata and 'standbys' not in reldata:
+                continue
+
+            # If any units have not yet authorized this unit, we can't
+            # trust that the service is usable yet.
+            if local_unit not in reldata.get('allowed-units', '').split():
+                return False
+
+            # Similarly, if any units do not yet match the requested database
+            # configuration, we can't trust that the service is usable yet.
+            for c in ['database', 'roles', 'extensions']:
+                requested = relation.local.get(c, '')
+                if requested and requested != reldata.get(c, ''):
+                    return False
+        return True
 
 
 class PostgreSQLClient(RelationBase):
@@ -248,6 +331,15 @@ class PostgreSQLClient(RelationBase):
             self.remove_state('{relation_name}.connected')
             self.conversation().depart()
             hookenv.log('Departed {} relation'.format(hookenv.relation_id()))
+
+    # @hook('{requires:pgsql}-relation-broken')
+    # def broken(self):
+    #     if not hookenv.relation_ids(self.relation_name):
+    #         for conversation in self.conversations():
+    #             conversation.remove_state('{relation_name}.connected')
+    #             conversation.remove_state('{relation_name}.master.available')
+    #             conversation.remove_state('{relation_name}.standbys.available')
+    #             conversation.remove_state('{relation_name}.database.available')
 
     def set_database(self, dbname, relid=None):
         """Set the database that the named relations connect to.
@@ -356,7 +448,7 @@ class PostgreSQLClient(RelationBase):
 
 
 def _cs(reldata):
-    """Generate a ConnectionString from :class:``context.RelationData``"""
+    """Generate a ConnectionString from :class:``context.RelationInfo``"""
     if not reldata:
         return None
     d = dict(host=reldata.get('host'),
