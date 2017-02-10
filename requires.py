@@ -418,7 +418,8 @@ class PostgreSQLClient(RelationBase):
         If multiple PostgreSQL services are related using this relation
         name then all standbys found are returned.
         '''
-        return set(itertools.chain(*(cs.standbys for cs in self)))
+        stbys = [cs.standbys for cs in self if cs.standbys is not None]
+        return set(itertools.chain(*stbys))
 
     def connection_string(self, unit=None):
         ''':class:`ConnectionString` to the remote unit, or None.
