@@ -420,7 +420,7 @@ class PostgreSQLClient(Endpoint):
             if unit not in relation.joined_units:
                 continue
             found = True
-            conn_str = _cs(relation[unit].received_raw)
+            conn_str = _cs(relation.joined_units[unit])
             if conn_str:
                 return conn_str
 
@@ -464,10 +464,10 @@ def _cs(unit):
         if local_unit not in allowed_units:
             return None  # Not yet authorized
 
-    if locdata.get('database', '') != reldata.get('database', ''):
+    if locdata.get('database') and locdata.get('database', '') != reldata.get('database', ''):
         return None  # Requested database does not match yet
-    if locdata.get('roles', '') != reldata.get('roles', ''):
+    if locdata.get('roles') and locdata.get('roles', '') != reldata.get('roles', ''):
         return None  # Requested roles have not yet been assigned
-    if locdata.get('extensions', '') != reldata.get('extensions', ''):
+    if locdata.get('extensions') and locdata.get('extensions', '') != reldata.get('extensions', ''):
         return None  # Requested extensions have not yet been installed
     return ConnectionString(**d)
