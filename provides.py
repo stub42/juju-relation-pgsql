@@ -23,9 +23,11 @@ class PostgreSQLServer(reactive.Endpoint):
     PostgreSQL partial server side interface.
     """
     @when('endpoint.{endpoint_name}.joined')
+    @when_not('{endpoint_name}.connected')
     def joined(self):
         reactive.set_flag(self.expand_name('{endpoint_name}.connected'))
 
+    @when('{endpoint_name}.connected')
     @when_not('endpoint.{endpoint_name}.joined')
     def departed(self):
         reactive.clear_flag(self.expand_name('{endpoint_name}.connected'))
